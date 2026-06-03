@@ -561,3 +561,13 @@ todoInput.addEventListener("keydown", event => {
     addTodo();
   }
 });
+
+window.addEventListener("load", () => {
+  const loader = document.querySelector(".loader, #loader, .loading, #loading, .splash, #splash");
+
+  if (loader) {
+    loader.style.display = "none";
+  }
+
+  document.body.classList.add("loaded");
+});
