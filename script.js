@@ -14,10 +14,10 @@ const cheeringMessages = [
   "천천히 해도 괜찮아요. 꾸준함은 생각보다 아주 강해요.",
   "오늘 해야 할 일을 하나씩 해내는 당신은 이미 충분히 멋져요.",
   "조금 부족한 하루여도 괜찮아요. 다시 시작할 힘은 늘 남아 있어요.",
-  "오늘의 너에게 다정하게 말해줘요. 나는 잘하고 있다고.",
+  "오늘의 나에게 다정하게 말해줘요. 나는 잘하고 있다고.",
   "완벽하지 않아도 괜찮아요. 시작한 것만으로도 충분히 의미 있어요.",
   "작은 체크 하나가 오늘의 리듬을 만들어줄 거예요.",
-  "급하지 않아도 돼요. 너만의 속도로 예쁘게 가면 돼요.",
+  "급하지 않아도 돼요. 나만의 속도로 예쁘게 가면 돼요.",
   "오늘도 당신의 하루가 조금 더 가벼워지길 바라요.",
   "할 수 있는 만큼만 해도 괜찮아요. 그만큼도 정말 소중해요."
 ];
@@ -64,6 +64,10 @@ let selectedKey = null;
 let draggedIndex = null;
 let currentDiaryKey = null;
 let saveTimer = null;
+
+let touchDragIndex = null;
+let touchDragElement = null;
+let touchStartY = 0;
 
 const monthNames = [
   "1월", "2월", "3월", "4월", "5월", "6월",
@@ -134,7 +138,9 @@ function renderCalendar() {
       today.getMonth() === currentMonth &&
       today.getDate() === day;
 
-    if (isToday) dayEl.classList.add("today");
+    if (isToday) {
+      dayEl.classList.add("today");
+    }
 
     dayEl.innerHTML = `
       <div class="day-number">${day}</div>
@@ -198,14 +204,25 @@ function renderTodos() {
       <button class="delete-btn" aria-label="삭제">×</button>
     `;
 
-    itemEl.querySelector(".check").addEventListener("click", () => toggleTodo(index));
-    itemEl.querySelector(".delete-btn").addEventListener("click", () => deleteTodo(index));
+    const dragHandle = itemEl.querySelector(".drag-handle");
+    const checkButton = itemEl.querySelector(".check");
+    const deleteButton = itemEl.querySelector(".delete-btn");
+
+    checkButton.addEventListener("click", event => {
+      toggleTodo(index, event.currentTarget);
+    });
+
+    deleteButton.addEventListener("click", () => deleteTodo(index));
 
     itemEl.addEventListener("dragstart", handleDragStart);
     itemEl.addEventListener("dragover", handleDragOver);
     itemEl.addEventListener("dragleave", handleDragLeave);
     itemEl.addEventListener("drop", handleDrop);
     itemEl.addEventListener("dragend", handleDragEnd);
+
+    dragHandle.addEventListener("pointerdown", event => {
+      startTouchReorder(event, index);
+    });
 
     todoList.appendChild(itemEl);
   });
@@ -231,7 +248,7 @@ function addTodo() {
   renderTodos();
 }
 
-function toggleTodo(index) {
+function toggleTodo(index, checkButton) {
   const todos = getStorage();
   const item = todos[selectedKey][index];
 
@@ -298,23 +315,143 @@ function handleDrop(event) {
 
 function handleDragEnd() {
   draggedIndex = null;
+
   document.querySelectorAll(".todo-item").forEach(item => {
     item.classList.remove("dragging", "drag-over");
   });
 }
 
+function startTouchReorder(event, index) {
+  if (event.pointerType === "mouse") return;
+
+  event.preventDefault();
+
+  touchDragIndex = index;
+  touchDragElement = event.currentTarget.closest(".todo-item");
+  touchStartY = event.clientY;
+
+  if (!touchDragElement) return;
+
+  touchDragElement.classList.add("touch-dragging");
+  touchDragElement.setPointerCapture(event.pointerId);
+
+  touchDragElement.addEventListener("pointermove", moveTouchReorder);
+  touchDragElement.addEventListener("pointerup", endTouchReorder);
+  touchDragElement.addEventListener("pointercancel", endTouchReorder);
+}
+
+function moveTouchReorder(event) {
+  if (touchDragElement === null || touchDragIndex === null) return;
+
+  event.preventDefault();
+
+  const currentY = event.clientY;
+  const deltaY = currentY - touchStartY;
+
+  touchDragElement.style.transform = `translateY(${deltaY}px) scale(1.02)`;
+
+  const todoItems = Array.from(document.querySelectorAll(".todo-item"));
+
+  const target = todoItems.find(item => {
+    if (item === touchDragElement) return false;
+
+    const rect = item.getBoundingClientRect();
+    return currentY > rect.top && currentY < rect.bottom;
+  });
+
+  todoItems.forEach(item => {
+    item.classList.remove("drag-over");
+  });
+
+  if (target) {
+    target.classList.add("drag-over");
+  }
+}
+
+function endTouchReorder(event) {
+  if (touchDragElement === null || touchDragIndex === null) return;
+
+  const currentY = event.clientY;
+  const todoItems = Array.from(document.querySelectorAll(".todo-item"));
+
+  const target = todoItems.find(item => {
+    if (item === touchDragElement) return false;
+
+    const rect = item.getBoundingClientRect();
+    return currentY > rect.top && currentY < rect.bottom;
+  });
+
+  if (target) {
+    const targetIndex = Number(target.dataset.index);
+
+    if (targetIndex !== touchDragIndex) {
+      const todos = getStorage();
+      const items = todos[selectedKey];
+
+      const movedItem = items.splice(touchDragIndex, 1)[0];
+      items.splice(targetIndex, 0, movedItem);
+
+      setStorage(todos);
+    }
+  }
+
+  touchDragElement.classList.remove("touch-dragging");
+  touchDragElement.style.transform = "";
+
+  document.querySelectorAll(".todo-item").forEach(item => {
+    item.classList.remove("drag-over");
+  });
+
+  touchDragElement.removeEventListener("pointermove", moveTouchReorder);
+  touchDragElement.removeEventListener("pointerup", endTouchReorder);
+  touchDragElement.removeEventListener("pointercancel", endTouchReorder);
+
+  touchDragIndex = null;
+  touchDragElement = null;
+  touchStartY = 0;
+
+  renderTodos();
+}
+
 function getEmojiSet(text) {
   const t = text.toLowerCase();
 
-  if (t.includes("신발") || t.includes("운동화") || t.includes("구두")) {
+  if (
+    t.includes("신발") ||
+    t.includes("운동화") ||
+    t.includes("구두") ||
+    t.includes("shoes") ||
+    t.includes("shoe") ||
+    t.includes("sneaker")
+  ) {
     return ["👟", "👞", "🥾", "✨"];
   }
 
-  if (t.includes("공부") || t.includes("시험") || t.includes("과제") || t.includes("숙제") || t.includes("학교")) {
+  if (
+    t.includes("공부") ||
+    t.includes("학업") ||
+    t.includes("시험") ||
+    t.includes("과제") ||
+    t.includes("숙제") ||
+    t.includes("수업") ||
+    t.includes("강의") ||
+    t.includes("학교") ||
+    t.includes("study") ||
+    t.includes("exam") ||
+    t.includes("test")
+  ) {
     return ["📝", "📄", "📚", "✏️"];
   }
 
-  if (t.includes("약속") || t.includes("만나") || t.includes("친구") || t.includes("데이트")) {
+  if (
+    t.includes("약속") ||
+    t.includes("만나") ||
+    t.includes("친구") ||
+    t.includes("데이트") ||
+    t.includes("미팅") ||
+    t.includes("meeting") ||
+    t.includes("meet")
+  ) {
     return ["😊", "😄", "🙂", "💫"];
   }
 
@@ -326,15 +463,19 @@ function getEmojiSet(text) {
     ["커피", "☕"],
     ["케이크", "🍰"],
     ["라면", "🍜"],
+    ["국수", "🍜"],
     ["초밥", "🍣"],
+    ["스시", "🍣"],
     ["밥", "🍚"],
     ["떡볶이", "🍲"],
     ["아이스크림", "🍦"],
     ["사과", "🍎"],
+    ["과일", "🍓"],
     ["빵", "🥐"],
     ["샐러드", "🥗"],
     ["고기", "🥩"],
     ["파스타", "🍝"],
+    ["우유", "🥛"],
     ["도넛", "🍩"],
     ["쿠키", "🍪"],
     ["김밥", "🍙"],
@@ -347,7 +488,17 @@ function getEmojiSet(text) {
     }
   }
 
-  if (t.includes("먹") || t.includes("음식") || t.includes("식사")) {
+  if (
+    t.includes("먹") ||
+    t.includes("음식") ||
+    t.includes("식사") ||
+    t.includes("저녁") ||
+    t.includes("점심") ||
+    t.includes("아침") ||
+    t.includes("디저트") ||
+    t.includes("food") ||
+    t.includes("eat")
+  ) {
     return ["🍽️", "🍴", "😋", "✨"];
   }
 
@@ -356,6 +507,7 @@ function getEmojiSet(text) {
 
 function createSoftFirework(text) {
   const emojis = getEmojiSet(text);
+
   createSoftFlash();
 
   const particleCount = 56;
@@ -398,9 +550,11 @@ function createSoftFlash() {
   }, 1000);
 }
 
-secretLogo.addEventListener("click", () => {
-  fakeError.classList.add("active");
-});
+if (secretLogo) {
+  secretLogo.addEventListener("click", () => {
+    fakeError.classList.add("active");
+  });
+}
 
 document.querySelectorAll(".error-close").forEach(button => {
   button.addEventListener("click", () => {
@@ -409,7 +563,9 @@ document.querySelectorAll(".error-close").forEach(button => {
   });
 });
 
-secretErrorCode.addEventListener("click", enterSecretWorld);
+if (secretErrorCode) {
+  secretErrorCode.addEventListener("click", enterSecretWorld);
+}
 
 function enterSecretWorld() {
   fakeError.classList.remove("active");
@@ -420,19 +576,23 @@ function enterSecretWorld() {
   openDiary();
 }
 
-secretBack.addEventListener("click", () => {
-  secretWorld.classList.remove("active");
-});
+if (secretBack) {
+  secretBack.addEventListener("click", () => {
+    secretWorld.classList.remove("active");
+  });
+}
 
-lightCord.addEventListener("click", () => {
-  lightCord.classList.add("pulled");
+if (lightCord) {
+  lightCord.addEventListener("click", () => {
+    lightCord.classList.add("pulled");
 
-  setTimeout(() => {
-    lightCord.classList.remove("pulled");
-  }, 260);
+    setTimeout(() => {
+      lightCord.classList.remove("pulled");
+    }, 260);
 
-  secretWorld.classList.toggle("lights-off");
-});
+    secretWorld.classList.toggle("lights-off");
+  });
+}
 
 function openDiary() {
   currentDiaryKey = selectedKey || todayKey();
@@ -445,26 +605,33 @@ function openDiary() {
   saveStatus.textContent = "자동 저장 준비 완료";
 }
 
-diaryText.addEventListener("input", () => {
-  clearTimeout(saveTimer);
-  saveStatus.textContent = "저장 중...";
+if (diaryText) {
+  diaryText.addEventListener("input", () => {
+    clearTimeout(saveTimer);
+    saveStatus.textContent = "저장 중...";
 
-  saveTimer = setTimeout(() => {
-    const diaryData = JSON.parse(localStorage.getItem("mkSecretDiary") || "{}");
-    diaryData[currentDiaryKey] = diaryText.value;
-    localStorage.setItem("mkSecretDiary", JSON.stringify(diaryData));
-    saveStatus.textContent = "자동 저장됐어요.";
-  }, 450);
-});
+    saveTimer = setTimeout(() => {
+      const diaryData = JSON.parse(localStorage.getItem("mkSecretDiary") || "{}");
+      diaryData[currentDiaryKey] = diaryText.value;
+      localStorage.setItem("mkSecretDiary", JSON.stringify(diaryData));
+      saveStatus.textContent = "자동 저장됐어요.";
+    }, 450);
+  });
+}
 
-diaryArchiveWindow.addEventListener("click", openDiaryArchive);
+if (diaryArchiveWindow) {
+  diaryArchiveWindow.addEventListener("click", openDiaryArchive);
+}
 
-archiveClose.addEventListener("click", () => {
-  diaryArchive.classList.remove("active");
-});
+if (archiveClose) {
+  archiveClose.addEventListener("click", () => {
+    diaryArchive.classList.remove("active");
+  });
+}
 
 function openDiaryArchive() {
   const diaryData = JSON.parse(localStorage.getItem("mkSecretDiary") || "{}");
+
   const entries = Object.entries(diaryData)
     .filter(([date, text]) => text.trim().length > 0)
     .sort((a, b) => b[0].localeCompare(a[0]));
