@@ -14,7 +14,7 @@ const cheeringMessages = [
   "천천히 해도 괜찮아요. 꾸준함은 생각보다 아주 강해요.",
   "오늘 해야 할 일을 하나씩 해내는 당신은 이미 충분히 멋져요.",
   "조금 부족한 하루여도 괜찮아요. 다시 시작할 힘은 늘 남아 있어요.",
-  "오늘의 나에게 다정하게 말해줘요. 나는 잘하고 있다고.",
+  "당신이 피워낼 꽃의 계절은 반드시 가장 아름답게 피어날 거예요.",
   "완벽하지 않아도 괜찮아요. 시작한 것만으로도 충분히 의미 있어요.",
   "작은 체크 하나가 오늘의 리듬을 만들어줄 거예요.",
   "급하지 않아도 돼요. 나만의 속도로 예쁘게 가면 돼요.",
@@ -25,6 +25,10 @@ const cheeringMessages = [
 const randomColor = pastelColors[Math.floor(Math.random() * pastelColors.length)];
 document.documentElement.style.setProperty("--accent", randomColor[0]);
 document.documentElement.style.setProperty("--accent-dark", randomColor[1]);
+
+const TODO_STORAGE_KEY = "mkPlannerTodos";
+const DIARY_STORAGE_KEY = "mkSecretDiary";
+const GHOST_LIFT = 1;
 
 const cover = document.getElementById("cover");
 const app = document.getElementById("app");
@@ -60,43 +64,62 @@ const archiveList = document.getElementById("archiveList");
 let currentDate = new Date();
 let currentYear = currentDate.getFullYear();
 let currentMonth = currentDate.getMonth();
+
 let selectedKey = null;
 let draggedIndex = null;
 let currentDiaryKey = null;
 let saveTimer = null;
 
-let touchDragIndex = null;
-let touchDragElement = null;
-let touchStartY = 0;
+let touchDragging = false;
+let dragOriginalItem = null;
+let dragGhost = null;
+let dragPlaceholder = null;
+let dragStartIndex = null;
+let dragOffsetX = 0;
+let dragOffsetY = 0;
+let dragPointerId = null;
+let dragMoved = false;
+let dragMoveFrame = null;
+let latestPointerX = 0;
+let latestPointerY = 0;
 
 const monthNames = [
   "1월", "2월", "3월", "4월", "5월", "6월",
   "7월", "8월", "9월", "10월", "11월", "12월"
 ];
 
-window.addEventListener("load", () => {
+function startApp() {
   setTimeout(() => {
-    cover.classList.add("hide");
-    app.classList.add("show");
+    if (cover) cover.classList.add("hide");
+    if (app) app.classList.add("show");
   }, 1650);
 
   setDailyMessage();
   renderCalendar();
-});
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", startApp);
+} else {
+  startApp();
+}
 
 function setDailyMessage() {
+  if (!dailyMessage) return;
+
   const today = new Date();
   const seed = today.getFullYear() + today.getMonth() * 31 + today.getDate();
   const message = cheeringMessages[seed % cheeringMessages.length];
+
   dailyMessage.textContent = `🌷 오늘의 응원: ${message}`;
 }
 
 function getStorage() {
-  return JSON.parse(localStorage.getItem("mkPlannerTodos") || "{}");
+  return JSON.parse(localStorage.getItem(TODO_STORAGE_KEY) || "{}");
 }
 
 function setStorage(data) {
-  localStorage.setItem("mkPlannerTodos", JSON.stringify(data));
+  localStorage.setItem(TODO_STORAGE_KEY, JSON.stringify(data));
 }
 
 function makeDateKey(year, month, day) {
@@ -109,6 +132,8 @@ function todayKey() {
 }
 
 function renderCalendar() {
+  if (!calendar || !monthTitle) return;
+
   calendar.innerHTML = "";
 
   const firstDay = new Date(currentYear, currentMonth, 1).getDay();
@@ -138,9 +163,7 @@ function renderCalendar() {
       today.getMonth() === currentMonth &&
       today.getDate() === day;
 
-    if (isToday) {
-      dayEl.classList.add("today");
-    }
+    if (isToday) dayEl.classList.add("today");
 
     dayEl.innerHTML = `
       <div class="day-number">${day}</div>
@@ -158,22 +181,31 @@ function renderCalendar() {
 
 function openDetail(key, day) {
   selectedKey = key;
-  selectedDateEl.textContent = `${currentYear}년 ${monthNames[currentMonth]} ${day}일`;
 
-  calendarView.classList.add("hidden");
-  detailView.classList.add("active");
+  if (selectedDateEl) {
+    selectedDateEl.textContent = `${currentYear}년 ${monthNames[currentMonth]} ${day}일`;
+  }
+
+  if (calendarView) calendarView.classList.add("hidden");
+  if (detailView) detailView.classList.add("active");
 
   renderTodos();
-  setTimeout(() => todoInput.focus(), 300);
+
+  setTimeout(() => {
+    if (todoInput) todoInput.focus();
+  }, 300);
 }
 
 function closeDetail() {
-  detailView.classList.remove("active");
-  calendarView.classList.remove("hidden");
+  if (detailView) detailView.classList.remove("active");
+  if (calendarView) calendarView.classList.remove("hidden");
+
   renderCalendar();
 }
 
 function renderTodos() {
+  if (!todoList) return;
+
   const todos = getStorage();
   const items = todos[selectedKey] || [];
 
@@ -209,10 +241,14 @@ function renderTodos() {
     const deleteButton = itemEl.querySelector(".delete-btn");
 
     checkButton.addEventListener("click", event => {
+      if (touchDragging || dragMoved) return;
       toggleTodo(index, event.currentTarget);
     });
 
-    deleteButton.addEventListener("click", () => deleteTodo(index));
+    deleteButton.addEventListener("click", () => {
+      if (touchDragging || dragMoved) return;
+      deleteTodo(index);
+    });
 
     itemEl.addEventListener("dragstart", handleDragStart);
     itemEl.addEventListener("dragover", handleDragOver);
@@ -221,7 +257,7 @@ function renderTodos() {
     itemEl.addEventListener("dragend", handleDragEnd);
 
     dragHandle.addEventListener("pointerdown", event => {
-      startTouchReorder(event, index);
+      startTouchReorder(event, itemEl);
     });
 
     todoList.appendChild(itemEl);
@@ -229,6 +265,8 @@ function renderTodos() {
 }
 
 function addTodo() {
+  if (!todoInput || !selectedKey) return;
+
   const text = todoInput.value.trim();
   if (!text) return;
 
@@ -264,6 +302,9 @@ function toggleTodo(index, checkButton) {
 
 function deleteTodo(index) {
   const todos = getStorage();
+
+  if (!todos[selectedKey]) return;
+
   todos[selectedKey].splice(index, 1);
 
   if (todos[selectedKey].length === 0) {
@@ -302,13 +343,7 @@ function handleDrop(event) {
 
   if (draggedIndex === null || draggedIndex === targetIndex) return;
 
-  const todos = getStorage();
-  const items = todos[selectedKey];
-
-  const movedItem = items.splice(draggedIndex, 1)[0];
-  items.splice(targetIndex, 0, movedItem);
-
-  setStorage(todos);
+  moveTodo(draggedIndex, targetIndex);
   draggedIndex = null;
   renderTodos();
 }
@@ -321,96 +356,197 @@ function handleDragEnd() {
   });
 }
 
-function startTouchReorder(event, index) {
+function startTouchReorder(event, item) {
   if (event.pointerType === "mouse") return;
 
   event.preventDefault();
+  event.stopPropagation();
 
-  touchDragIndex = index;
-  touchDragElement = event.currentTarget.closest(".todo-item");
-  touchStartY = event.clientY;
+  if (!item || !todoList) return;
 
-  if (!touchDragElement) return;
+  const itemRect = item.getBoundingClientRect();
 
-  touchDragElement.classList.add("touch-dragging");
-  touchDragElement.setPointerCapture(event.pointerId);
+  touchDragging = true;
+  dragMoved = false;
+  dragOriginalItem = item;
+  dragStartIndex = Number(item.dataset.index);
+  dragPointerId = event.pointerId;
 
-  touchDragElement.addEventListener("pointermove", moveTouchReorder);
-  touchDragElement.addEventListener("pointerup", endTouchReorder);
-  touchDragElement.addEventListener("pointercancel", endTouchReorder);
+  dragOffsetX = event.clientX - itemRect.left;
+  dragOffsetY = event.clientY - itemRect.top;
+
+  latestPointerX = event.clientX;
+  latestPointerY = event.clientY;
+
+  document.body.classList.add("reordering");
+
+  dragPlaceholder = document.createElement("div");
+  dragPlaceholder.className = "drag-placeholder";
+  dragPlaceholder.style.setProperty("--placeholder-height", `${itemRect.height}px`);
+
+  item.parentNode.insertBefore(dragPlaceholder, item.nextSibling);
+
+  dragGhost = item.cloneNode(true);
+  dragGhost.classList.add("drag-ghost");
+  dragGhost.style.width = `${itemRect.width}px`;
+  dragGhost.style.height = `${itemRect.height}px`;
+  dragGhost.style.left = `${itemRect.left}px`;
+  dragGhost.style.top = `${itemRect.top - GHOST_LIFT}px`;
+
+  document.body.appendChild(dragGhost);
+
+  item.classList.add("drag-hidden");
+
+  event.currentTarget.setPointerCapture(event.pointerId);
+
+  document.addEventListener("pointermove", moveTouchReorder, { passive: false });
+  document.addEventListener("pointerup", endTouchReorder);
+  document.addEventListener("pointercancel", endTouchReorder);
 }
 
 function moveTouchReorder(event) {
-  if (touchDragElement === null || touchDragIndex === null) return;
+  if (!touchDragging || !dragGhost || !dragPlaceholder || !todoList) return;
 
   event.preventDefault();
+  event.stopPropagation();
 
-  const currentY = event.clientY;
-  const deltaY = currentY - touchStartY;
+  latestPointerX = event.clientX;
+  latestPointerY = event.clientY;
 
-  touchDragElement.style.transform = `translateY(${deltaY}px) scale(1.02)`;
+  dragMoved = true;
 
-  const todoItems = Array.from(document.querySelectorAll(".todo-item"));
+  if (!dragMoveFrame) {
+    dragMoveFrame = requestAnimationFrame(() => {
+      const newLeft = latestPointerX - dragOffsetX;
+      const newTop = latestPointerY - dragOffsetY - GHOST_LIFT;
 
-  const target = todoItems.find(item => {
-    if (item === touchDragElement) return false;
+      dragGhost.style.left = `${newLeft}px`;
+      dragGhost.style.top = `${newTop}px`;
 
+      dragMoveFrame = null;
+    });
+  }
+
+  const items = Array.from(todoList.querySelectorAll(".todo-item:not(.drag-hidden)"));
+
+  let inserted = false;
+
+  for (const item of items) {
     const rect = item.getBoundingClientRect();
-    return currentY > rect.top && currentY < rect.bottom;
-  });
+    const middle = rect.top + rect.height / 2;
 
-  todoItems.forEach(item => {
-    item.classList.remove("drag-over");
-  });
+    if (latestPointerY < middle) {
+      todoList.insertBefore(dragPlaceholder, item);
+      inserted = true;
+      break;
+    }
+  }
 
-  if (target) {
-    target.classList.add("drag-over");
+  if (!inserted) {
+    todoList.appendChild(dragPlaceholder);
+  }
+
+  const wrap = document.querySelector(".todo-list-wrap");
+  const wrapRect = wrap?.getBoundingClientRect();
+
+  if (wrap && wrapRect) {
+    if (latestPointerY < wrapRect.top + 42) {
+      wrap.scrollTop -= 5;
+    }
+
+    if (latestPointerY > wrapRect.bottom - 42) {
+      wrap.scrollTop += 5;
+    }
   }
 }
 
 function endTouchReorder(event) {
-  if (touchDragElement === null || touchDragIndex === null) return;
-
-  const currentY = event.clientY;
-  const todoItems = Array.from(document.querySelectorAll(".todo-item"));
-
-  const target = todoItems.find(item => {
-    if (item === touchDragElement) return false;
-
-    const rect = item.getBoundingClientRect();
-    return currentY > rect.top && currentY < rect.bottom;
-  });
-
-  if (target) {
-    const targetIndex = Number(target.dataset.index);
-
-    if (targetIndex !== touchDragIndex) {
-      const todos = getStorage();
-      const items = todos[selectedKey];
-
-      const movedItem = items.splice(touchDragIndex, 1)[0];
-      items.splice(targetIndex, 0, movedItem);
-
-      setStorage(todos);
-    }
+  if (!touchDragging || !dragPlaceholder || !dragOriginalItem || !todoList) {
+    resetTouchReorder();
+    return;
   }
 
-  touchDragElement.classList.remove("touch-dragging");
-  touchDragElement.style.transform = "";
+  event.preventDefault();
+  event.stopPropagation();
 
-  document.querySelectorAll(".todo-item").forEach(item => {
-    item.classList.remove("drag-over");
-  });
+  const newIndex = Array.from(todoList.children).indexOf(dragPlaceholder);
 
-  touchDragElement.removeEventListener("pointermove", moveTouchReorder);
-  touchDragElement.removeEventListener("pointerup", endTouchReorder);
-  touchDragElement.removeEventListener("pointercancel", endTouchReorder);
+  if (
+    dragStartIndex !== null &&
+    newIndex !== -1 &&
+    dragStartIndex !== newIndex
+  ) {
+    const todos = getStorage();
+    const items = todos[selectedKey] || [];
 
-  touchDragIndex = null;
-  touchDragElement = null;
-  touchStartY = 0;
+    const movedItem = items.splice(dragStartIndex, 1)[0];
 
+    let adjustedIndex = newIndex;
+
+    if (newIndex > dragStartIndex) {
+      adjustedIndex = newIndex - 1;
+    }
+
+    items.splice(adjustedIndex, 0, movedItem);
+    todos[selectedKey] = items;
+    setStorage(todos);
+  }
+
+  resetTouchReorder();
   renderTodos();
+}
+
+function resetTouchReorder() {
+  if (dragMoveFrame) {
+    cancelAnimationFrame(dragMoveFrame);
+    dragMoveFrame = null;
+  }
+
+  if (dragOriginalItem) {
+    dragOriginalItem.classList.remove("drag-hidden");
+  }
+
+  if (dragGhost) {
+    dragGhost.remove();
+  }
+
+  if (dragPlaceholder) {
+    dragPlaceholder.remove();
+  }
+
+  document.removeEventListener("pointermove", moveTouchReorder);
+  document.removeEventListener("pointerup", endTouchReorder);
+  document.removeEventListener("pointercancel", endTouchReorder);
+
+  document.body.classList.remove("reordering");
+
+  touchDragging = false;
+  dragOriginalItem = null;
+  dragGhost = null;
+  dragPlaceholder = null;
+  dragStartIndex = null;
+  dragOffsetX = 0;
+  dragOffsetY = 0;
+  dragPointerId = null;
+  latestPointerX = 0;
+  latestPointerY = 0;
+
+  setTimeout(() => {
+    dragMoved = false;
+  }, 100);
+}
+
+function moveTodo(fromIndex, toIndex) {
+  const todos = getStorage();
+  const items = todos[selectedKey];
+
+  if (!items || !items[fromIndex]) return;
+
+  const movedItem = items.splice(fromIndex, 1)[0];
+  items.splice(toIndex, 0, movedItem);
+
+  todos[selectedKey] = items;
+  setStorage(todos);
 }
 
 function getEmojiSet(text) {
@@ -552,14 +688,21 @@ function createSoftFlash() {
 
 if (secretLogo) {
   secretLogo.addEventListener("click", () => {
-    fakeError.classList.add("active");
+    if (fakeError) {
+      fakeError.classList.add("active");
+    }
   });
 }
 
 document.querySelectorAll(".error-close").forEach(button => {
   button.addEventListener("click", () => {
-    fakeError.classList.remove("active");
-    secretWorld.classList.remove("active");
+    if (fakeError) {
+      fakeError.classList.remove("active");
+    }
+
+    if (secretWorld) {
+      secretWorld.classList.remove("active");
+    }
   });
 });
 
@@ -568,17 +711,26 @@ if (secretErrorCode) {
 }
 
 function enterSecretWorld() {
-  fakeError.classList.remove("active");
-  secretWorld.classList.add("active");
-  secretWorld.scrollTop = 0;
+  if (fakeError) {
+    fakeError.classList.remove("active");
+  }
+
+  if (secretWorld) {
+    secretWorld.classList.add("active");
+    secretWorld.scrollTop = 0;
+  }
+
   document.documentElement.scrollTop = 0;
   document.body.scrollTop = 0;
+
   openDiary();
 }
 
 if (secretBack) {
   secretBack.addEventListener("click", () => {
-    secretWorld.classList.remove("active");
+    if (secretWorld) {
+      secretWorld.classList.remove("active");
+    }
   });
 }
 
@@ -590,17 +742,21 @@ if (lightCord) {
       lightCord.classList.remove("pulled");
     }, 260);
 
-    secretWorld.classList.toggle("lights-off");
+    if (secretWorld) {
+      secretWorld.classList.toggle("lights-off");
+    }
   });
 }
 
 function openDiary() {
   currentDiaryKey = selectedKey || todayKey();
 
+  if (!diaryDate || !diaryText || !saveStatus) return;
+
   const [year, month, day] = currentDiaryKey.split("-");
   diaryDate.textContent = `${year}년 ${Number(month)}월 ${Number(day)}일의 비밀 일기`;
 
-  const diaryData = JSON.parse(localStorage.getItem("mkSecretDiary") || "{}");
+  const diaryData = JSON.parse(localStorage.getItem(DIARY_STORAGE_KEY) || "{}");
   diaryText.value = diaryData[currentDiaryKey] || "";
   saveStatus.textContent = "자동 저장 준비 완료";
 }
@@ -608,13 +764,19 @@ function openDiary() {
 if (diaryText) {
   diaryText.addEventListener("input", () => {
     clearTimeout(saveTimer);
-    saveStatus.textContent = "저장 중...";
+
+    if (saveStatus) {
+      saveStatus.textContent = "저장 중...";
+    }
 
     saveTimer = setTimeout(() => {
-      const diaryData = JSON.parse(localStorage.getItem("mkSecretDiary") || "{}");
+      const diaryData = JSON.parse(localStorage.getItem(DIARY_STORAGE_KEY) || "{}");
       diaryData[currentDiaryKey] = diaryText.value;
-      localStorage.setItem("mkSecretDiary", JSON.stringify(diaryData));
-      saveStatus.textContent = "자동 저장됐어요.";
+      localStorage.setItem(DIARY_STORAGE_KEY, JSON.stringify(diaryData));
+
+      if (saveStatus) {
+        saveStatus.textContent = "자동 저장됐어요.";
+      }
     }, 450);
   });
 }
@@ -625,12 +787,16 @@ if (diaryArchiveWindow) {
 
 if (archiveClose) {
   archiveClose.addEventListener("click", () => {
-    diaryArchive.classList.remove("active");
+    if (diaryArchive) {
+      diaryArchive.classList.remove("active");
+    }
   });
 }
 
 function openDiaryArchive() {
-  const diaryData = JSON.parse(localStorage.getItem("mkSecretDiary") || "{}");
+  if (!archiveList || !diaryArchive) return;
+
+  const diaryData = JSON.parse(localStorage.getItem(DIARY_STORAGE_KEY) || "{}");
 
   const entries = Object.entries(diaryData)
     .filter(([date, text]) => text.trim().length > 0)
@@ -672,10 +838,12 @@ function openDiaryArchive() {
 function loadDiaryByDate(dateKey) {
   currentDiaryKey = dateKey;
 
+  if (!diaryDate || !diaryText || !saveStatus) return;
+
   const [year, month, day] = dateKey.split("-");
   diaryDate.textContent = `${year}년 ${Number(month)}월 ${Number(day)}일의 비밀 일기`;
 
-  const diaryData = JSON.parse(localStorage.getItem("mkSecretDiary") || "{}");
+  const diaryData = JSON.parse(localStorage.getItem(DIARY_STORAGE_KEY) || "{}");
   diaryText.value = diaryData[dateKey] || "";
   saveStatus.textContent = "불러온 일기예요.";
 }
@@ -689,33 +857,44 @@ function escapeHTML(text) {
     .replaceAll("'", "&#039;");
 }
 
-prevMonth.addEventListener("click", () => {
-  currentMonth--;
+if (prevMonth) {
+  prevMonth.addEventListener("click", () => {
+    currentMonth--;
 
-  if (currentMonth < 0) {
-    currentMonth = 11;
-    currentYear--;
-  }
+    if (currentMonth < 0) {
+      currentMonth = 11;
+      currentYear--;
+    }
 
-  renderCalendar();
-});
+    renderCalendar();
+  });
+}
 
-nextMonth.addEventListener("click", () => {
-  currentMonth++;
+if (nextMonth) {
+  nextMonth.addEventListener("click", () => {
+    currentMonth++;
 
-  if (currentMonth > 11) {
-    currentMonth = 0;
-    currentYear++;
-  }
+    if (currentMonth > 11) {
+      currentMonth = 0;
+      currentYear++;
+    }
 
-  renderCalendar();
-});
+    renderCalendar();
+  });
+}
 
-backBtn.addEventListener("click", closeDetail);
-addBtn.addEventListener("click", addTodo);
+if (backBtn) {
+  backBtn.addEventListener("click", closeDetail);
+}
 
-todoInput.addEventListener("keydown", event => {
-  if (event.key === "Enter") {
-    addTodo();
-  }
-});
+if (addBtn) {
+  addBtn.addEventListener("click", addTodo);
+}
+
+if (todoInput) {
+  todoInput.addEventListener("keydown", event => {
+    if (event.key === "Enter") {
+      addTodo();
+    }
+  });
+}
